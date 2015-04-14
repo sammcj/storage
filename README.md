@@ -1,6 +1,6 @@
 ### Open Source, Code Controlled, Enterprise Ready SSD Storage
 
-#### Coming soon...
+Coming soon - In the mean time you can read [my high-level post](http://smcleod.net/building-a-high-performance-ssd-san) on the project from earlier this year.
 
 [smcleod.net](https://smcleod.net)
 

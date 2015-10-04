@@ -1,0 +1,138 @@
+---
+storage_alpha:
+
+  storage_hosts:
+    s1-san5:
+      corosync_ip: '172.30.1.5'
+      ipmi_ip: '10.51.100.205'
+      ipmi_userid: 'ADMIN'
+      ipmi_passwd: 'AsIfIdPostThisOnGithub'
+
+    s1-san6:
+      corosync_ip: '172.30.1.6'
+      ipmi_ip: '10.51.100.206'
+      ipmi_userid: 'ADMIN'
+      ipmi_passwd: 'AsIfIdPostThisOnGithub'
+
+  arrays:
+    '/dev/md480':
+      ensure: created
+      devices:
+        - /dev/sda1
+        - /dev/sdb1
+        - /dev/sdc1
+        - /dev/sdd1
+        - /dev/sde1
+        - /dev/sdf1
+        - /dev/sdg1
+        - /dev/sdh1
+      level: 10
+      force: false
+      options: '--layout=f2 --chunk=512K'
+      bitmap: 'internal'
+      metadata: '1.2'
+    '/dev/md200':
+      ensure: created
+      devices:
+        - /dev/nvme0n1p1
+        - /dev/nvme1n1p1
+      level: 1
+      options: '--chunk=512K'
+      metadata: '1.2'
+      force: false
+      bitmap: 'internal'
+
+  volume_groups:
+    nvme:
+      physical_volumes:
+        - /dev/md200
+      logical_volumes:
+        tierone:
+          size: '1.09T'
+    sandisk:
+      physical_volumes:
+        - /dev/md480
+      logical_volumes:
+        tiertwo:
+          size: '1.74T'
+
+  drbd:
+    'r0':
+      host1: 's1-san5'
+      host2: 's1-san6'
+      host1_ip: '172.30.1.5'
+      host2_ip: '172.30.1.6'
+      device: '/dev/drbd0'
+      port: '7789'
+      initial_setup: true
+      rate: '4194304K'
+      logical_volume: '/dev/mapper/nvme-tierone'
+      manage: false
+    'r1':
+      host1: 's1-san5'
+      host2: 's1-san6'
+      host1_ip: '172.30.1.5'
+      host2_ip: '172.30.1.6'
+      device: '/dev/drbd1'
+      port: '7889'
+      initial_setup: true
+      rate: '4194304K'
+      logical_volume: '/dev/mapper/sandisk-tiertwo'
+      manage: false
+
+  ha_resources:
+    r0:
+      iscsi_vip: 10.51.40.55
+      iscsi_vip_nm: 24
+      iscsi_iqn: 'iqn.2003-01.org.linux-iscsi.s1-san5.x8664:sn.b50bc7bf74a6'
+      master_node: s1-san5
+    r1:
+      iscsi_vip: 10.51.40.65
+      iscsi_vip_nm: 24
+      iscsi_iqn: 'iqn.2003-01.org.linux-iscsi.s1-san5.x8664:sn.ab518058d445'
+      master_node: s1-san6
+
+  allowed_initiators:
+    - 'iqn.2015-05.com.example:5a6a2f8c' #server 1
+    - 'iqn.2015-06.com.example:1f2e2f2c' #server 2
+
+
+network_storage:
+  eno1:
+    nm_controlled: 'no'
+    master: 'drbd'
+    mtu: '9000'
+    slave: 'yes'
+  eno2:
+    nm_controlled: 'no'
+    master: 'drbd'
+    mtu: '9000'
+    slave: 'yes'
+  ens2f0:
+    nm_controlled: 'no'
+    master: 'storage'
+    mtu: '9000'
+    slave: 'yes'
+  ens2f1:
+    nm_controlled: 'no'
+    master: 'storage'
+    mtu: '9000'
+    slave: 'yes'
+  storage:
+    name: storage
+    nm_controlled: 'no'
+    bonding_opts: 'miimon=100 updelay=0 downdelay=0 mode=802.3ad lacp_rate=1'
+    netmask: '255.255.255.0'
+    mtu: '9000'
+    type: 'Bond'
+    gateway: '10.51.40.1'
+    dns1: '10.51.10.235'
+    manage_order: '30'
+  drbd:
+    name: drbd
+    nm_controlled: 'no'
+    bonding_opts: 'miimon=100 updelay=0 downdelay=0 mode=1'
+    netmask: '255.255.255.0'
+    mtu: '9000'
+    type: 'Bond'
+    manage_order: '20'

@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Dodgy script to enable additional iSCSI settings
+# Can be removed when https://github.com/ClusterLabs/resource-agents/issues/610 is resolved.
+
+trap "exit 0" SIGTERM
+
+# Enable discard etc...
+nice -10 find /sys/kernel/config/target/core/ -regextype awk -regex '(.*)emulate_(tpu|3pc|caw)' -exec sh -c 'echo "1" > {}' \;
+
+# safety net incase anyone runs targetcli by hand
+nice -10 targetcli set global auto_save_on_exit=false
+
+while :; do
+    nice -10 sleep 1
+done

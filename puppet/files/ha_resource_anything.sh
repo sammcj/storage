@@ -1,0 +1,314 @@
+#!/bin/sh
+#
+#       OCF Resource Agent compliant resource script.
+#
+# Copyright (c) 2009 IN-telegence GmbH & Co. KG, Dominik Klein
+#                    All Rights Reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+
+# OCF instance parameters
+#       OCF_RESKEY_binfile
+#       OCF_RESKEY_cmdline_options
+# OCF_RESKEY_workdir
+# OCF_RESKEY_pidfile
+#       OCF_RESKEY_logfile
+#       OCF_RESKEY_errlogfile
+#       OCF_RESKEY_user
+#       OCF_RESKEY_monitor_hook
+#       OCF_RESKEY_stop_timeout
+#
+# This RA starts $binfile with $cmdline_options as $user in $workdir and writes a $pidfile from that. 
+# If you want it to, it logs:
+# - stdout to $logfile, stderr to $errlogfile or 
+# - stdout and stderr to $logfile
+# - or to will be captured by lrmd if these options are omitted.
+# Monitoring is done through $pidfile or your custom $monitor_hook script. 
+# The RA expects the program to keep running "daemon-like" and
+# not just quit and exit. So this is NOT (yet - feel free to
+# enhance) a way to just run a single one-shot command which just
+# does something and then exits.
+
+# Initialization:
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+getpid() {
+        grep -o '[0-9]*' $1
+}
+
+anything_status() {
+  if test -f "$pidfile"
+  then
+    if pid=`getpid $pidfile` && [ "$pid" ] && kill -s 0 $pid
+    then
+      return $OCF_SUCCESS
+    else
+      # pidfile w/o process means the process died
+      return $OCF_ERR_GENERIC
+    fi
+  else
+    return $OCF_NOT_RUNNING
+  fi
+}
+
+anything_start() {
+  if ! anything_status
+  then
+    if [ -n "$logfile" -a -n "$errlogfile" ]
+    then
+      # We have logfile and errlogfile, so redirect STDOUT und STDERR to different files
+      cmd="su - $user -c \"cd $workdir; nohup $binfile $cmdline_options >> $logfile 2>> $errlogfile & \"'echo \$!' "
+    else
+      # We only have logfile so redirect STDOUT and STDERR to the same file
+      cmd="su - $user -c \"cd $workdir; nohup $binfile $cmdline_options >> $logfile 2>&1 & \"'echo \$!' "
+    fi
+    ocf_log debug "Starting $process: $cmd"
+    # Execute the command as created above
+    eval $cmd > $pidfile
+    if anything_status
+    then
+      ocf_log debug "$process: $cmd started successfully"
+      return $OCF_SUCCESS
+    else 
+      ocf_log err "$process: $cmd could not be started"
+      return $OCF_ERR_GENERIC
+    fi
+  else
+    # If already running, consider start successful
+    ocf_log debug "$process: $cmd is already running"
+    return $OCF_SUCCESS
+  fi
+}
+
+anything_stop() {
+  local rc=$OCF_SUCCESS
+
+        if [ -n "$OCF_RESKEY_stop_timeout" ]
+        then
+                stop_timeout=$OCF_RESKEY_stop_timeout
+        elif [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
+                # Allow 2/3 of the action timeout for the orderly shutdown
+                # (The origin unit is ms, hence the conversion)
+                stop_timeout=$((OCF_RESKEY_CRM_meta_timeout/1500))
+        else
+                stop_timeout=10
+        fi
+  if anything_status
+  then
+                pid=`getpid $pidfile`
+                kill $pid
+                i=0
+                while [ $i -lt $stop_timeout ]
+                do
+                        if ! anything_status
+                        then
+                          rm -f $pidfile
+                                return $OCF_SUCCESS
+                        fi
+                        sleep 1 
+                        i=$((i+1))
+                done
+                ocf_log warn "Stop with SIGTERM failed/timed out, now sending SIGKILL."
+                kill -s 9 $pid
+                while :
+                do
+                        if ! anything_status
+                        then
+                                ocf_log warn "SIGKILL did the job."
+                                rc=$OCF_SUCCESS
+                                break
+                        fi
+                        ocf_log info "The job still hasn't stopped yet. Waiting..."
+                        sleep 1
+                done
+  fi
+  rm -f $pidfile 
+  return $rc
+}
+
+anything_monitor() {
+  anything_status
+  ret=$?
+  if [ $ret -eq $OCF_SUCCESS ]
+  then
+    if [ -n "$OCF_RESKEY_monitor_hook" ]; then
+      eval "$OCF_RESKEY_monitor_hook"
+                        if [ $? -ne $OCF_SUCCESS ]; then
+                                return ${OCF_ERR_GENERIC}
+                        fi
+      return $OCF_SUCCESS
+    else
+      true
+    fi
+  else
+    return $ret
+  fi
+}
+
+# FIXME: Attributes special meaning to the resource id
+process="$OCF_RESOURCE_INSTANCE"
+binfile="$OCF_RESKEY_binfile"
+cmdline_options="$OCF_RESKEY_cmdline_options"
+workdir="$OCF_RESKEY_workdir"
+pidfile="$OCF_RESKEY_pidfile"
+[ -z "$pidfile" ] && pidfile=${HA_VARRUN}/anything_${process}.pid
+logfile="${OCF_RESKEY_logfile:-/dev/null}"
+errlogfile="$OCF_RESKEY_errlogfile"
+user="$OCF_RESKEY_user"
+[ -z "$user" ] && user=root
+
+anything_validate() {
+  if ! su - $user -c "test -x $binfile"
+  then
+    ocf_log err "binfile $binfile does not exist or is not executable by $user."
+    exit $OCF_ERR_INSTALLED
+  fi
+  if ! getent passwd $user >/dev/null 2>&1
+  then
+    ocf_log err "user $user does not exist."
+    exit $OCF_ERR_INSTALLED
+  fi
+  for logfilename in "$logfile" "$errlogfile"
+  do
+    if [ -n "$logfilename" ]; then
+      mkdir -p `dirname $logfilename` || {
+        ocf_log err "cannot create $(dirname $logfilename)"
+        exit $OCF_ERR_INSTALLED
+      }
+    fi
+  done
+  [ "x$workdir" != x -a ! -d "$workdir" ] && {
+    ocf_log err "working directory $workdir doesn't exist"
+    exit $OCF_ERR_INSTALLED
+  }
+  return $OCF_SUCCESS
+}
+
+anything_meta() {
+cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="anything">
+<version>1.0</version>
+<longdesc lang="en">
+This is a generic OCF RA to manage almost anything.
+</longdesc>
+<shortdesc lang="en">Manages an arbitrary service</shortdesc>
+
+<parameters>
+<parameter name="binfile" required="1" unique="1">
+<longdesc lang="en">
+The full name of the binary to be executed. This is expected to keep running with the same pid and not just do something and exit.
+</longdesc>
+<shortdesc lang="en">Full path name of the binary to be executed</shortdesc>
+<content type="string" default=""/>
+</parameter>
+<parameter name="cmdline_options" required="0">
+<longdesc lang="en">
+Command line options to pass to the binary
+</longdesc>
+<shortdesc lang="en">Command line options</shortdesc>
+<content type="string" />
+</parameter>
+<parameter name="workdir" required="0" unique="0">
+<longdesc lang="en">
+The path from where the binfile will be executed.
+</longdesc>
+<shortdesc lang="en">Full path name of the work directory</shortdesc>
+<content type="string" default=""/>
+</parameter>
+<parameter name="pidfile">
+<longdesc lang="en">
+File to read/write the PID from/to.
+</longdesc>
+<shortdesc lang="en">File to write STDOUT to</shortdesc>
+<content type="string" default="${HA_VARRUN}/anything_${process}.pid"/>
+</parameter>
+<parameter name="logfile" required="0">
+<longdesc lang="en">
+File to write STDOUT to
+</longdesc>
+<shortdesc lang="en">File to write STDOUT to</shortdesc>
+<content type="string" default="/dev/null" />
+</parameter>
+<parameter name="errlogfile" required="0">
+<longdesc lang="en">
+File to write STDERR to
+</longdesc>
+<shortdesc lang="en">File to write STDERR to</shortdesc>
+<content type="string" />
+</parameter>
+<parameter name="user" required="0">
+<longdesc lang="en">
+User to run the command as
+</longdesc>
+<shortdesc lang="en">User to run the command as</shortdesc>
+<content type="string" default="root"/>
+</parameter>
+<parameter name="monitor_hook">
+<longdesc lang="en">
+Command to run in monitor operation
+</longdesc>
+<shortdesc lang="en">Command to run in monitor operation</shortdesc>
+<content type="string"/>
+</parameter>
+<parameter name="stop_timeout">
+<longdesc lang="en">
+In the stop operation: Seconds to wait for kill -TERM to succeed
+before sending kill -SIGKILL. Defaults to 2/3 of the stop operation timeout.
+</longdesc>
+<shortdesc lang="en">Seconds to wait after having sent SIGTERM before sending SIGKILL in stop operation</shortdesc>
+<content type="string" default=""/>
+</parameter>
+</parameters>
+<actions>
+<action name="start"   timeout="20s" />
+<action name="stop"    timeout="20s" />
+<action name="monitor" depth="0"  timeout="20s" interval="10" />
+<action name="meta-data"  timeout="5" />
+<action name="validate-all"  timeout="5" />
+</actions>
+</resource-agent>
+END
+exit 0
+}
+
+case "$1" in
+  meta-data|metadata|meta_data)
+    anything_meta
+  ;;
+  start)
+    anything_start
+  ;;
+  stop)
+    anything_stop
+  ;;
+  monitor)
+    anything_monitor
+  ;;
+  validate-all)
+    anything_validate
+  ;;
+  *)
+    ocf_log err "$0 was called with unsupported arguments: $*"
+    exit $OCF_ERR_UNIMPLEMENTED
+  ;;
+esac
